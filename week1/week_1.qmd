@@ -1,0 +1,135 @@
+---
+title: "Time Series Forecasting with PyTorch: A Six-Week Deep Learning Plan" 
+subtitle: "From Fundamentals to Transformers for Financial Data" 
+format: pdf
+---
+
+## Week 1: Time-Series Fundamentals & Data Preprocessing (PyTorch)
+
+### Focus: Stationarity and the Supervised Learning Hack
+
+The core concept in Week 1 is understanding stationarity—the idea that a time series' statistical properties (mean, variance) are constant over time. Stock prices are famously non-stationary, which is why they are challenging to model. We will also learn how to transform sequential data into a format deep learning models can consume, now using PyTorch conventions.
+
+### Signal Analysis & Core Concepts
+
+Time Series Components: Every series can be broken down into: Trend (long-term movement), Seasonality (fixed, periodic cycles), and Residual (what's left).
+
+Stationarity: The Achilles' heel of classic models. Deep learning models often handle non-stationary data better, but preprocessing (like using returns instead of prices) is still essential.
+
+Autocorrelation Function (ACF): A plot showing the correlation of a time series with a lagged version of itself. High ACF in price data confirms non-stationarity.
+
+### Deep Learning Architecture: PyTorch Tensor Input
+
+PyTorch deep learning models expect data in a 3D or 2D tensor format. We will convert our sequences into PyTorch tensors using the standard Dataset and DataLoader structure. The input shape will be (Batch Size, Sequence Length, Features). This "sequence length" dimension is the Lookback Window—how much history we feed the model to predict the future.
+
+### Libraries
+
+- pandas (Data handling)
+
+- numpy (Numerical operations)
+
+- matplotlib (Visualization)
+
+- statsmodels (ACF calculation)
+
+- torch (PyTorch Tensors and Utilities)
+
+## Starter Code: Data Loading, Lookback Transformation, and PyTorch DataLoaders
+
+```python
+import numpy as np 
+import pandas as pd 
+import matplotlib.pyplot as plt 
+import torch from torch.utils.data 
+import Dataset, DataLoader from statsmodels.graphics.tsaplots 
+import plot_acf
+
+
+# --- 1. Simulate Stock Data and Calculate Returns ---
+
+def prepare_time_series_data() -\> pd.DataFrame: """ Simulates stock price data and converts it to log returns for stationarity.
+    """       
+    Returns:
+        pd.DataFrame: DataFrame containing 'Close' prices and stationary 'Returns'.
+    """
+    np.random.seed(42)
+    # Simulate a price series with trend and noise
+    prices = 100 + np.cumsum(np.random.randn(200) * 0.5) + np.linspace(0, 10, 200)
+    data = pd.DataFrame({'Close': prices})
+
+    # The fundamental shift: Use log returns to approximate stationarity
+    data['Returns'] = np.log(data['Close'] / data['Close'].shift(1))
+    return data.dropna()
+
+
+data = prepare_time_series_data()
+
+print("--- Data Snapshot ---") print(data.head())
+
+# --- 2. Autocorrelation Analysis ---
+
+# Visualize ACF for prices (Non-stationary) and returns (Closer to stationary)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4)) 
+plot_acf(data['Close'], lags=20, ax=axes[0], title='ACF: Closing Price (Non-stationary)') 
+plot_acf(data['Returns'], lags=20, ax=axes[1], title='ACF: Log Returns (Closer to stationary)') plt.show()
+
+# --- 3. Sequence Transformation using PyTorch Dataset ---
+
+class StockTimeSeriesDataset(Dataset): 
+    """ A PyTorch Dataset for creating time series sequences (Lookback Windows) from a 1D data array. """ 
+    def **init**(self, data_array: np.ndarray, lookback: int): 
+        """ Initializes the dataset.
+         
+        Args:
+            data_array: 1D NumPy array of the time series feature (e.g., returns).
+            lookback: The length of the input sequence (Time Steps).
+        """
+        # Convert NumPy to PyTorch tensor, and add a feature dimension (unsqueeze)
+        self.data_tensor = torch.tensor(data_array, dtype=torch.float32).unsqueeze(-1).contiguous()
+        self.lookback = lookback
+        self.num_samples = len(data_array) - lookback
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of sequences/samples in the dataset.
+        """
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves one input sequence (X) and its corresponding target (y).
+
+        Args:
+            idx: Index of the sample to retrieve.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 
+                The input sequence (X) of shape (lookback, 1) and the target 
+                value (y) of shape (1, 1).
+        """
+        # X: Sequence from index 'idx' up to 'idx + lookback'
+        x = self.data_tensor[idx:idx + self.lookback]
+        # y: Target value immediately after the sequence
+        y = self.data_tensor[idx + self.lookback]
+        return x, y
+
+
+# Configuration
+
+RETURNS_ARRAY = data['Returns'].values LOOKBACK = 10 # 10 days of history BATCH_SIZE = 32
+
+# Create Dataset and DataLoader
+
+dataset = StockTimeSeriesDataset(RETURNS_ARRAY, LOOKBACK) data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+# Get the shape of the first batch
+
+first_batch_x, first_batch_y = next(iter(data_loader))
+
+print("\n--- PyTorch DataLoader Shapes ---") 
+print(f"Total number of samples: {len(dataset)}") 
+print(f"Batch Size: {BATCH_SIZE}") print(f"First Batch X shape (Batch, Timesteps, Features=1): {first_batch_x.shape}") 
+print(f"First Batch Y shape (Batch, Features=1): {first_batch_y.shape}")
+```
+
