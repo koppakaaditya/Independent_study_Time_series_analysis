@@ -1,0 +1,190 @@
+title: "Week 5: Advanced Time Series Preprocessing & Evaluation (PyTorch)" subtitle: "Mastering Financial Data Hygiene and Backtesting" format: html
+
+📅 Focus: Stationarity, Scaling, and Walk-Forward Validation
+
+A deep learning model is only as good as the data you feed it. Week 5 is dedicated to the critical steps of data hygiene for financial markets: rigorously ensuring features are appropriately scaled and, most importantly, evaluating your model using methods that prevent data leakage and simulate real-world trading.
+
+🧠 Signal Analysis & Preprocessing
+
+Detrending & Differencing (I in ARIMA): Explicitly removing the trend component. First-order differencing (using $\Delta P_t = P_t - P_{t-1}$) is the most common way to make a price series stationary by focusing on the change in price, or the returns.
+
+Standardization vs. Normalization:
+
+Normalization (MinMaxScaler): Scales data to a fixed range (usually [0, 1]). Useful for data that must retain distribution shape.
+
+Standardization (StandardScaler): Scales data to have a mean of 0 and a standard deviation of 1. Better for models sensitive to input magnitude.
+
+💻 Deep Learning: Rigorous Evaluation (Walk-Forward)
+
+In financial time series, simple train_test_split is flawed because it allows the model to "see" future information. We must use Walk-Forward Validation.
+
+Walk-Forward Validation:
+
+Set an initial training period (e.g., 200 steps).
+
+Train the model on the current window.
+
+Forecast the very next time step (1 day ahead).
+
+Move the training window forward by one day, incorporating the new actual data point.
+
+Repeat.
+
+This simulates how a model operates in a live environment and provides a much more honest assessment of its predictive power.
+
+📚 Libraries
+
+torch (PyTorch model and tensors)
+
+scikit-learn (Standardization, Metrics)
+
+pandas, numpy
+
+Starter Code: Differencing and Conceptual PyTorch Walk-Forward Split
+
+This code outlines the logical flow of a Walk-Forward Validation loop, which would require re-initialization and retraining of the PyTorch model in a real-world scenario.
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+
+
+# --- 1. PyTorch Dataset for Walk-Forward ---
+class WalkForwardDataset(Dataset):
+    """
+    A minimal PyTorch Dataset for creating one single sequence (X) and one target (y).
+    Used to handle the input for training within the walk-forward loop.
+    """
+    def __init__(self, data_array: np.ndarray, lookback: int):
+        """
+        Initializes the dataset, preparing all X, y pairs from the current window.
+
+        Args:
+            data_array: The full time series window data as a NumPy array.
+            lookback: The length of the input sequence.
+        """
+        data_tensor = torch.tensor(data_array, dtype=torch.float32).unsqueeze(-1).contiguous()
+        X, y = [], []
+        
+        for i in range(len(data_tensor) - lookback):
+            X.append(data_tensor[i:i + lookback])
+            y.append(data_tensor[i + lookback])
+            
+        self.X = torch.stack(X)
+        self.y = torch.stack(y)
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of sequence-target pairs.
+        """
+        return len(self.X)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves one input sequence (X) and its corresponding target (y).
+        """
+        return self.X[idx], self.y[idx]
+
+# --- 2. Define a Simple LSTM Model (for Walk-Forward) ---
+class SimpleLSTMModel(nn.Module):
+    """
+    Simple LSTM model for demonstration purposes in the walk-forward loop.
+    """
+    def __init__(self, input_size: int = 1, hidden_size: int = 32, output_size: int = 1):
+        """
+        Initializes the SimpleLSTMModel.
+        """
+        super().__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+        """
+        lstm_out, _ = self.lstm(x)
+        output = self.fc(lstm_out[:, -1, :])
+        return output
+
+# --- 3. Data Preparation with Differencing ---
+dates = pd.date_range('2018-01-01', periods=300)
+np.random.seed(0)
+prices = 100 + np.cumsum(np.random.randn(300) * 0.5) + np.linspace(0, 15, 300)
+df = pd.DataFrame({'Close': prices}, index=dates)
+
+# CRITICAL STEP: Differencing to make the series stationary (focus on returns)
+df['Returns'] = df['Close'].diff().fillna(0)
+data = df['Returns'].values.reshape(-1, 1)
+
+# Apply Standardization
+scaler = StandardScaler()
+scaled_data = scaler.fit_transform(data)
+
+
+# --- 4. Conceptual Walk-Forward Validation Structure ---
+LOOKBACK = 10
+TRAIN_SIZE = 200  # Initial training data points
+N_FEATURES = 1
+EPOCHS = 2 # Low epoch count for simulation speed, increase for real run
+
+predictions = []
+# The true values we aim to predict (from TRAIN_SIZE + 1 to the end)
+true_values = scaled_data[TRAIN_SIZE + 1:] 
+
+# The Walk-Forward Loop
+# Start at TRAIN_SIZE, end one before the last point (which is the last target)
+for i in range(TRAIN_SIZE, len(scaled_data) - 1):
+    # a. Define training window (Time-aware split)
+    train_window = scaled_data[:i]
+    
+    # b. Prepare and Train Model on current window
+    
+    # 1. Create dataset/dataloader for the current window
+    train_dataset = WalkForwardDataset(train_window, LOOKBACK)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+    
+    # 2. Initialize or reset model for this fold
+    model = SimpleLSTMModel(input_size=N_FEATURES)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    loss_fn = nn.MSELoss()
+    
+    # 3. Train the model (Conceptual: only a few epochs)
+    for epoch in range(EPOCHS):
+        for X_batch, y_batch in train_loader:
+            optimizer.zero_grad()
+            y_pred = model(X_batch)
+            loss = loss_fn(y_pred, y_batch)
+            loss.backward()
+            optimizer.step()
+    
+    # c. Prepare input for the 1-step forecast
+    # The input sequence is the last LOOKBACK points of the current training window
+    input_sequence_np = train_window[-LOOKBACK:].reshape(1, LOOKBACK, N_FEATURES)
+    input_sequence_tensor = torch.tensor(input_sequence_np, dtype=torch.float32)
+
+    # d. Make the 1-step forecast
+    model.eval()
+    with torch.no_grad():
+        next_prediction = model(input_sequence_tensor).numpy().flatten()[0]
+    
+    predictions.append(next_prediction)
+    
+    # e. The forecast window "walks forward" by one step in the next iteration
+    # The new data point (scaled_data[i]) is now included in the training_window for the next loop.
+
+# --- 5. Evaluation ---
+# Note: The metric must be calculated on the INVERSE-TRANSFORMED data for meaning.
+# Mock Inverse-Transform
+mock_predictions_actual = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
+mock_true_actual = scaler.inverse_transform(true_values.reshape(-1, 1))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse = np.sqrt(mean_squared_error(mock_true_actual, mock_predictions_actual))
+
+print(f"Total Forecast Steps: {len(predictions)}")
+print(f"True Values Length: {len(mock_true_actual)}")
+print(f"\nConceptual PyTorch Walk-Forward RMSE (on actual scale): {rmse:.4f}")
