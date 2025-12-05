@@ -1,0 +1,210 @@
+title: "Week 4: Convolutional Neural Networks (CNNs) for Feature
+Extraction (PyTorch)" subtitle: "Using Filters to Detect Local Signal
+Patterns" format: html
+
+📅 Focus: 1D Convolutions and Hybrid Architectures
+
+In Week 4, we leverage the power of Convolutional Neural Networks
+(CNNs), typically used for images, and apply them to time series using
+1D convolutions. A 1D CNN excels at finding local, time-invariant
+patterns (e.g., a rapid price surge, a double-bottom pattern) that occur
+within a small window, regardless of where they occur in the sequence.
+
+🧠 Deep Learning Architecture: The Hybrid CNN-LSTM
+
+We will focus on a Hybrid CNN-LSTM model:
+
+CNN (Conv1d) acts as a feature extractor, detecting small, local
+patterns.
+
+LSTM then models the temporal dependencies between these extracted
+features.
+
+A critical complexity in PyTorch is managing the input shape:
+
+nn.Conv1d expects: $(N, C_{\text{in}}, L_{\text{in}})$ (Batch, Features,
+Sequence Length)
+
+nn.LSTM expects: $(N, L, H_{\text{in}})$ (Batch, Sequence Length,
+Features)
+
+We must use the .permute() function to switch the dimensions between the
+CNN and LSTM layers.
+
+📊 Signal Analysis: Frequency Domain and Feature Detection
+
+Thinking of the CNN kernel as a trainable filter brings us closer to the
+concept of frequency domain analysis. The size of the kernel determines
+the length of the pattern it can detect. If a kernel is a low-pass
+filter, it smooths the data; if it's a high-pass filter, it accentuates
+rapid changes (noise/sudden movement).
+
+📚 Libraries
+
+torch (PyTorch Conv1d, LSTM)
+
+sklearn.preprocessing
+
+pandas, numpy
+
+Starter Code: Implementing a Hybrid PyTorch CNN-LSTM Model
+
+This architecture is robust: the CNN captures local patterns, and the
+LSTM captures long-term dependencies between them.
+
+import numpy as np import pandas as pd import torch import torch.nn as
+nn from torch.utils.data import Dataset, DataLoader from
+sklearn.preprocessing import MinMaxScaler from sklearn.model_selection
+import train_test_split
+
+# --- 1. Prepare Data (Multivariate) ---
+
+def prepare_synthetic_data(T: int = 500, F: int = 3) -\> pd.DataFrame:
+""" Creates synthetic multivariate data and injects a local pattern.
+
+    Args:
+        T: Total number of time steps.
+        F: Total number of features.
+
+    Returns:
+        pd.DataFrame: DataFrame with synthetic features.
+    """
+    np.random.seed(42)
+    data = np.random.randn(T, F)
+    # Introduce a simple local pattern in feature 0 every 10 steps
+    for i in range(10, T - 10, 10):
+        data[i:i+5, 0] += 5 # Price surge pattern
+
+    return pd.DataFrame(data, columns=[f'F{i+1}' for i in range(F)])
+
+class MultivariateTimeSeriesDataset(Dataset): """ A PyTorch Dataset for
+creating time series sequences from multivariate data. (Reusing the
+implementation from Week 2) """ def **init**(self, features: np.ndarray,
+lookback: int, target_col_idx: int = 0): """ Initializes the dataset.
+
+        Args:
+            features: 2D NumPy array of features (N_samples, N_features).
+            lookback: The length of the input sequence (Time Steps).
+            target_col_idx: Index of the feature column to use as the target (y).
+        """
+        self.data_tensor = torch.tensor(features, dtype=torch.float32)
+        self.lookback = lookback
+        self.num_samples = len(features) - lookback
+        self.target_col_idx = target_col_idx
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of sequences/samples.
+        """
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves one input sequence (X) and its corresponding target (y).
+        """
+        x = self.data_tensor[idx:idx + self.lookback, :]
+        y = self.data_tensor[idx + self.lookback, self.target_col_idx].unsqueeze(0)
+        return x, y
+
+# --- Execution ---
+
+df = prepare_synthetic_data(T=500, F=3) LOOKBACK = 30 N_FEATURES =
+df.shape\[1\]
+
+# Scale features
+
+scaler = MinMaxScaler(feature_range=(-1, 1)) scaled_features =
+scaler.fit_transform(df.values)
+
+# Create Dataset and Split
+
+test_size = int(len(scaled_features) \* 0.2) train_data =
+scaled_features\[:-test_size\] test_data = scaled_features\[-test_size -
+LOOKBACK:\]
+
+train_dataset = MultivariateTimeSeriesDataset(train_data, LOOKBACK,
+target_col_idx=0) train_loader = DataLoader(train_dataset,
+batch_size=32, shuffle=False) X_example, \_ = next(iter(train_loader))
+
+# --- 2. Define the Hybrid PyTorch CNN-LSTM Model ---
+
+class CNNLSTMModel(nn.Module): """ A hybrid 1D CNN and LSTM model for
+time series forecasting. CNN extracts local features, which are then
+sequenced by the LSTM. """ def **init**(self, input_size: int,
+hidden_size: int, output_size: int, kernel_size: int = 5, conv_channels:
+int = 64): """ Initializes the CNNLSTMModel.
+
+        Args:
+            input_size: Number of features (channels) in the input.
+            hidden_size: Hidden size for the LSTM layer.
+            output_size: Output size (e.g., 1 for next day return).
+            kernel_size: Size of the convolutional kernel.
+            conv_channels: Number of output channels for the CNN.
+        """
+        super().__init__()
+
+        # 1. CNN Feature Extractor
+        self.conv_layer = nn.Sequential(
+            # Input to Conv1d: (Batch, N_FEATURES, LOOKBACK)
+            nn.Conv1d(in_channels=input_size, out_channels=conv_channels, 
+                      kernel_size=kernel_size, padding='same'),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2)
+        )
+
+        # Calculate the new sequence length after CNN and pooling
+        # Since we use padding='same' and pool_size=2, the length is ceil(LOOKBACK / 2).
+        self.new_seq_len = (LOOKBACK + 1) // 2
+
+        # 2. LSTM Sequence Processor
+        self.lstm = nn.LSTM(
+            # Input size is now the number of output channels from the CNN
+            input_size=conv_channels,
+            hidden_size=hidden_size,
+            batch_first=True
+        )
+
+        # 3. Output Layer
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, input_size).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size, output_size).
+        """
+        # STEP 1: Reshape for Conv1d (Batch, Features, Sequence Length)
+        x = x.permute(0, 2, 1) 
+
+        # Apply CNN layers
+        cnn_out = self.conv_layer(x) # Shape: (B, conv_channels, new_seq_len)
+
+        # STEP 2: Reshape for LSTM (Batch, Sequence Length, Features)
+        lstm_input = cnn_out.permute(0, 2, 1) # Shape: (B, new_seq_len, conv_channels)
+
+        # Apply LSTM
+        lstm_out, _ = self.lstm(lstm_input)
+
+        # Use output of the last time step for prediction
+        output = self.fc(lstm_out[:, -1, :])
+        return output
+
+# --- 3. Model Instantiation and Summary ---
+
+HIDDEN_SIZE = 50 OUTPUT_SIZE = 1
+
+model = CNNLSTMModel( input_size=N_FEATURES, hidden_size=HIDDEN_SIZE,
+output_size=OUTPUT_SIZE )
+
+# Print a conceptual summary
+
+print(f"X batch shape (initial): {X_example.shape}") print(f"N_FEATURES:
+{N_FEATURES}") print(f"Lookback after pooling: {(LOOKBACK + 1) // 2}")
+print("`\n`{=tex}--- Hybrid PyTorch CNN-LSTM Model Summary ---")
+print(model)
+
+# Conceptual training setup...
