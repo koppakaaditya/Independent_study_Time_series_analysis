@@ -1,0 +1,198 @@
+title: "Week 2: Simple Recurrent Models (RNNs) and Feature Engineering (PyTorch)" subtitle: "Introducing Memory and Classic Signal Filters" format: html
+
+📅 Focus: Sequence Memory and Feature-Rich Input
+
+Week 2 focuses on the first architectural step: understanding Recurrent Neural Networks (RNNs). While basic RNNs suffer from the vanishing gradient problem, they are conceptually key to modeling time. Critically, we introduce Feature Engineering from classic signal analysis to give the model better inputs.
+
+🧠 Signal Analysis & Core Concepts
+
+Moving Averages (MA): These are classic low-pass filters that smooth out high-frequency noise and highlight the underlying price trend.
+
+SMA (Simple Moving Average): Basic average over a window.
+
+EMA (Exponential Moving Average): Gives more weight to recent data, making it a smoother, faster-reacting filter.
+
+Momentum/Oscillators: Indicators like the Relative Strength Index (RSI) or Stochastic Oscillator are signal analysis tools that attempt to measure the velocity of price changes. They can be crucial features for a deep learning model.
+
+💻 Deep Learning Architecture: The Basic PyTorch RNN
+
+The basic RNN processes sequences one element at a time, using a hidden state $h_t$ that combines the current input $x_t$ and the previous state $h_{t-1}$.
+
+$$h_t = \tanh(W_{hh}h_{t-1} + W_{xh}x_t + b_h)$$
+
+We define the architecture using torch.nn.RNN and torch.nn.Linear. The model takes input in the shape (Sequence Length, Batch Size, Features) by default, but PyTorch allows setting batch_first=True for the more common (Batch Size, Sequence Length, Features) format.
+
+📚 Libraries
+
+torch (Deep Learning framework)
+
+pandas, numpy
+
+sklearn.preprocessing (For normalization)
+
+Starter Code: Feature Engineering and Simple PyTorch RNN Definition
+
+This code shows how to add a critical signal (EMA) to your data, scale features, and define a simple nn.RNN model.
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+
+
+# --- 1. Data Preparation with Multivariate Features ---
+def prepare_multivariate_data(data_size: int = 200) -> pd.DataFrame:
+    """
+    Simulates stock price data and adds a feature (EMA).
+
+    Args:
+        data_size: Number of time steps to simulate.
+
+    Returns:
+        pd.DataFrame: DataFrame containing 'Returns' and 'EMA_10' features.
+    """
+    np.random.seed(42)
+    prices = 100 + np.cumsum(np.random.randn(data_size) * 0.5) + np.linspace(0, 10, data_size)
+    data = pd.DataFrame({'Close': prices})
+
+    # Feature Engineering: Add Exponential Moving Average (EMA)
+    data['EMA_10'] = data['Close'].ewm(span=10, adjust=False).mean()
+    # Target and first feature: Percentage change (Returns)
+    data['Returns'] = data['Close'].pct_change()
+    
+    return data[['Returns', 'EMA_10']].dropna()
+
+class MultivariateTimeSeriesDataset(Dataset):
+    """
+    A PyTorch Dataset for creating time series sequences from multivariate data.
+    """
+    def __init__(self, features: np.ndarray, lookback: int, target_col_idx: int = 0):
+        """
+        Initializes the dataset.
+
+        Args:
+            features: 2D NumPy array of features (N_samples, N_features).
+            lookback: The length of the input sequence (Time Steps).
+            target_col_idx: Index of the feature column to use as the target (y).
+        """
+        # Convert NumPy to PyTorch tensor
+        self.data_tensor = torch.tensor(features, dtype=torch.float32)
+        self.lookback = lookback
+        self.num_samples = len(features) - lookback
+        self.target_col_idx = target_col_idx
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of sequences/samples.
+        """
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves one input sequence (X) and its corresponding target (y).
+
+        Args:
+            idx: Index of the sample to retrieve.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 
+                The input sequence (X) of shape (lookback, N_features) and the 
+                target value (y) of shape (1,).
+        """
+        x = self.data_tensor[idx:idx + self.lookback, :]
+        y = self.data_tensor[idx + self.lookback, self.target_col_idx].unsqueeze(0)
+        return x, y
+
+# --- Prepare Data ---
+df_data = prepare_multivariate_data()
+N_FEATURES = df_data.shape[1]
+LOOKBACK = 10
+
+# Scale features
+scaler = MinMaxScaler(feature_range=(-1, 1))
+scaled_features = scaler.fit_transform(df_data.values)
+
+# Create Dataset and split (conceptual time-aware split)
+test_size = int(len(scaled_features) * 0.2)
+train_features = scaled_features[:-test_size]
+test_features = scaled_features[-test_size - LOOKBACK:] # Ensure test set has enough lookback data
+
+train_dataset = MultivariateTimeSeriesDataset(train_features, LOOKBACK)
+test_dataset = MultivariateTimeSeriesDataset(test_features, LOOKBACK)
+
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+# Example data for model check
+X_example, _ = next(iter(train_loader)) 
+
+
+# --- 2. Define the Simple PyTorch RNN Model ---
+class SimpleRNNModel(nn.Module):
+    """
+    A simple Recurrent Neural Network model for time series forecasting.
+    """
+    def __init__(self, input_size: int, hidden_size: int, output_size: int, num_layers: int = 1):
+        """
+        Initializes the SimpleRNNModel.
+
+        Args:
+            input_size: The number of expected features in the input (N_features).
+            hidden_size: The number of features in the hidden state h.
+            output_size: The number of output features (e.g., 1 for next day return).
+            num_layers: Number of recurrent layers.
+        """
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.rnn = nn.RNN(
+            input_size, 
+            hidden_size, 
+            num_layers, 
+            batch_first=True
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, input_size).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size, output_size).
+        """
+        # rnn_out: (batch_size, seq_len, hidden_size * num_directions)
+        # _ (hn): (num_layers * num_directions, batch_size, hidden_size)
+        rnn_out, _ = self.rnn(x)
+        
+        # We only care about the output from the last time step
+        # rnn_out[:, -1, :] grabs the hidden state of the last time step
+        output = self.fc(rnn_out[:, -1, :])
+        return output
+
+# --- 3. Model Instantiation and Summary ---
+HIDDEN_SIZE = 32
+OUTPUT_SIZE = 1
+
+model = SimpleRNNModel(
+    input_size=N_FEATURES, 
+    hidden_size=HIDDEN_SIZE, 
+    output_size=OUTPUT_SIZE
+)
+
+# Print a conceptual summary
+print(f"X batch shape: {X_example.shape}")
+print(f"Number of Features: {N_FEATURES}")
+print("\n--- Simple PyTorch RNN Model Summary ---")
+print(model)
+
+# Conceptual training setup:
+# optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+# loss_fn = nn.MSELoss()
+
+
+⏭ Next Steps for Week 3
+
+Next week, we address the biggest weakness of the SimpleRNN—the vanishing gradient problem—by diving deep into the architecture of the Long Short-Term Memory (LSTM) network using PyTorch.
