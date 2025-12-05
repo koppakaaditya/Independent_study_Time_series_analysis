@@ -1,0 +1,158 @@
+title: "Week 6: Exploring the State-of-the-Art (Transformers) & Next Steps (PyTorch)" subtitle: "Attention Mechanisms and Linear Baselines" format: html
+
+📅 Focus: Attention, Global Dependencies, and Modern Baselines
+
+The Transformer architecture, which underpins modern LLMs, has become the state-of-the-art for many time series tasks. It replaces recurrence with the Attention Mechanism, allowing it to model dependencies across the entire sequence simultaneously, overcoming the limitations of LSTMs.
+
+We will focus on the conceptual advantage of Attention and also introduce modern, simple linear models (like D-Linear) as a surprisingly effective baseline that often outperforms complex recurrent models due to the chaotic nature of financial data.
+
+🧠 Deep Learning Architecture: Attention is All You Need (in PyTorch)
+
+Self-Attention: The key innovation. Every time step in the input sequence (Query $Q$) is compared against every other time step (Key $K$) to calculate a relevance score.
+
+Transformer Encoder Block: Consists of a Multi-Head Attention layer and a Feed-Forward Network (FFN). We will use PyTorch's native nn.TransformerEncoderLayer.
+
+D-Linear: A recent, purely linear model that demonstrates the power of simplicity.
+
+📊 Signal Analysis: Multi-variate and Causality
+
+The final step is to integrate multiple time series. Modeling a single stock ticker is fine, but including indices (S&P 500) or related commodity prices makes the problem multi-variate. We must consider cross-correlation (the correlation between two different series at various lags).
+
+📚 Libraries
+
+torch (PyTorch nn.TransformerEncoderLayer, nn.Linear)
+
+pandas, numpy
+
+Starter Code: PyTorch Transformer Encoder and D-Linear Baseline
+
+This code outlines the structure of a PyTorch Transformer Encoder Block and the simple D-Linear baseline.
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+# --- 1. Transformer Encoder Block & Model ---
+class TimeSeriesTransformer(nn.Module):
+    """
+    A minimal Transformer Encoder model for time series forecasting.
+    It uses a single Transformer Encoder Layer followed by a regression head.
+    """
+    def __init__(self, d_model: int, nhead: int, d_ffn: int, num_layers: int, dropout: float = 0.1):
+        """
+        Initializes the TimeSeriesTransformer.
+
+        Args:
+            d_model: The number of expected features in the input (embed_dim).
+            nhead: The number of heads in the multiheadattention model.
+            d_ffn: The dimension of the feedforward network model.
+            num_layers: The number of sub-encoder-layers in the encoder.
+            dropout: The dropout value.
+        """
+        super().__init__()
+        
+        # PyTorch TransformerEncoderLayer is the core block
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=nhead, 
+            dim_feedforward=d_ffn, 
+            dropout=dropout, 
+            batch_first=True
+        )
+        # nn.TransformerEncoder stacks multiple encoder layers
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=num_layers
+        )
+        
+        # Output head: Linear layer maps the sequence output to a prediction
+        self.fc = nn.Linear(d_model, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, d_model).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size, 1).
+        """
+        # Transformer Output: (batch_size, seq_len, d_model)
+        # Note: Position encoding is often required but omitted here for simplicity
+        transformer_output = self.transformer_encoder(x)
+        
+        # Use Global Average Pooling to reduce the sequence dimension (seq_len)
+        # Shape becomes (batch_size, d_model)
+        avg_output = transformer_output.mean(dim=1)
+        
+        # Final prediction
+        output = self.fc(avg_output)
+        return output
+
+# --- 2. The D-Linear Baseline ---
+class DLinearBaseline(nn.Module):
+    """
+    A purely linear model that flattens the input sequence and predicts.
+    Represents a strong, simple baseline for time series forecasting.
+    """
+    def __init__(self, lookback: int, n_features: int):
+        """
+        Initializes the DLinearBaseline.
+
+        Args:
+            lookback: The length of the input sequence.
+            n_features: The number of features in the input.
+        """
+        super().__init__()
+        # The input is flattened, so the input size is Lookback * N_Features
+        self.input_size = lookback * n_features
+        self.linear = nn.Linear(self.input_size, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, n_features).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size, 1).
+        """
+        # Flatten the sequence dimensions: (batch_size, lookback * n_features)
+        x_flat = x.reshape(x.size(0), -1)
+        
+        # Linear prediction
+        output = self.linear(x_flat)
+        return output
+
+# --- 3. Model Instantiation and Summary ---
+LOOKBACK = 50
+N_FEATURES = 5
+D_MODEL = N_FEATURES  # Embedding dimension = Number of features (simplification)
+
+# Example input tensor
+X_example = torch.randn(32, LOOKBACK, N_FEATURES)
+
+# Transformer Model Setup
+TRANSFORMER_MODEL = TimeSeriesTransformer(
+    d_model=D_MODEL,
+    nhead=1,            # 1 head for simple features
+    d_ffn=D_MODEL * 4,
+    num_layers=1
+)
+
+# D-Linear Model Setup
+LINEAR_MODEL = DLinearBaseline(
+    lookback=LOOKBACK, 
+    n_features=N_FEATURES
+)
+
+print("--- PyTorch Transformer Model Summary (Conceptual) ---")
+print(TRANSFORMER_MODEL)
+print(f"Output shape check: {TRANSFORMER_MODEL(X_example).shape}")
+
+print("\n--- PyTorch D-Linear Baseline Summary (Conceptual) ---")
+print(LINEAR_MODEL)
+print(f"Output shape check: {LINEAR_MODEL(X_example).shape}")
