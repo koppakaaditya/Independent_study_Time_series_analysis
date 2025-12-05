@@ -1,0 +1,200 @@
+title: "Week 3: Long Short-Term Memory Networks (LSTMs) Deep Dive (PyTorch)" subtitle: "Conquering Long-Term Dependencies with Gated Memory" format: html
+
+📅 Focus: Gates, Cells, and Sequence Modeling Mastery
+
+The Long Short-Term Memory (LSTM) is the workhorse of classical deep learning for time series and is paramount for modeling stock data. Its internal gated mechanisms allow it to explicitly control which information to keep and which to discard, solving the vanishing gradient problem that plagues simple RNNs.
+
+🧠 Deep Learning Architecture: The LSTM Cell
+
+The magic of the LSTM lies in its three gates and its cell state ($C_t$):
+
+Forget Gate ($f_t$): Decides what information from the previous cell state $C_{t-1}$ to throw away.
+
+Input Gate ($i_t$): Decides what new information from the current input $x_t$ to store in the cell state.
+
+Output Gate ($o_t$): Decides what parts of the cell state $C_t$ should be outputted as the hidden state $h_t$.
+
+The ability to maintain the cell state across long sequences is what makes LSTMs superior for capturing long-term financial trends and relationships.
+
+📊 Signal Analysis: Autocorrelation and Lookback
+
+The ideal size of your lookback window ($T$) should be informed by the Partial Autocorrelation Function (PACF). While ACF tells you total dependence, PACF shows the direct dependence between $P_t$ and $P_{t-k}$ after controlling for the values in between ($P_{t-1}$ to $P_{t-k+1}$).
+
+📚 Libraries
+
+torch (PyTorch LSTM implementation)
+
+scikit-learn (Standardization)
+
+pandas, numpy
+
+Starter Code: Implementing a Stacked PyTorch LSTM for Forecasting
+
+This code demonstrates how to define a stacked LSTM model in PyTorch, which is often more powerful for learning hierarchical temporal features.
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+
+
+# --- 1. Prepare Data ---
+def generate_time_series(data_size: int = 500) -> pd.DataFrame:
+    """
+    Generates a synthetic time series (noisy sine wave with trend).
+
+    Args:
+        data_size: The number of time steps.
+
+    Returns:
+        pd.DataFrame: DataFrame with the time series 'Value'.
+    """
+    time = np.arange(0, data_size)
+    amplitude = 5
+    frequency = 0.05
+    trend = 0.01 * time
+    noise = np.random.randn(len(time)) * 0.5
+    series = amplitude * np.sin(2 * np.pi * frequency * time) + trend + noise
+    return pd.DataFrame({'Value': series})
+
+class UnivariateTimeSeriesDataset(Dataset):
+    """
+    A PyTorch Dataset for creating time series sequences from a single feature.
+    """
+    def __init__(self, data_array: np.ndarray, lookback: int):
+        """
+        Initializes the dataset.
+
+        Args:
+            data_array: 1D NumPy array of the time series feature.
+            lookback: The length of the input sequence (Time Steps).
+        """
+        # Convert NumPy to PyTorch tensor, and add a feature dimension
+        self.data_tensor = torch.tensor(data_array, dtype=torch.float32).unsqueeze(-1).contiguous()
+        self.lookback = lookback
+        self.num_samples = len(data_array) - lookback
+
+    def __len__(self) -> int:
+        """
+        Returns the total number of sequences/samples.
+        """
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves one input sequence (X) and its corresponding target (y).
+
+        Args:
+            idx: Index of the sample to retrieve.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 
+                The input sequence (X) and the target value (y).
+        """
+        x = self.data_tensor[idx:idx + self.lookback]
+        y = self.data_tensor[idx + self.lookback]
+        return x, y
+
+# --- Execution ---
+df = generate_time_series()
+
+# Normalize the single feature (Value)
+scaler = StandardScaler()
+scaled_series = scaler.fit_transform(df[['Value']].values)
+
+LOOKBACK = 20
+N_FEATURES = 1
+
+# Train/Test Split (Chronological Split is used for time series)
+train_size = int(len(scaled_series) * 0.8)
+train_data = scaled_series[:train_size]
+# Ensure test data includes the lookback period from the end of the training data
+test_data = scaled_series[train_size - LOOKBACK:] 
+
+# Create DataLoaders
+train_dataset = UnivariateTimeSeriesDataset(train_data, LOOKBACK)
+train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
+X_example, _ = next(iter(train_loader)) 
+
+
+# --- 2. Define the Stacked PyTorch LSTM Model ---
+class StackedLSTMModel(nn.Module):
+    """
+    A Stacked LSTM model for time series forecasting.
+    """
+    def __init__(self, input_size: int, hidden_size: int, output_size: int, num_layers: int):
+        """
+        Initializes the StackedLSTMModel.
+
+        Args:
+            input_size: The number of expected features in the input (N_features).
+            hidden_size: The number of features in the hidden state h.
+            output_size: The number of output features (e.g., 1).
+            num_layers: The number of LSTM layers to stack.
+        """
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        
+        # nn.LSTM handles stacking internally via num_layers
+        self.lstm = nn.LSTM(
+            input_size, 
+            hidden_size, 
+            num_layers, 
+            batch_first=True
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the model.
+
+        Args:
+            x: Input tensor of shape (batch_size, sequence_length, input_size).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size, output_size).
+        """
+        # lstm_out: (batch_size, seq_len, hidden_size)
+        # (hn, cn): (num_layers, batch_size, hidden_size)
+        lstm_out, (hn, cn) = self.lstm(x)
+        
+        # We only take the hidden state of the LAST time step in the sequence
+        # lstm_out[:, -1, :] is the output of the last LSTM layer at the last time step
+        output = self.fc(lstm_out[:, -1, :])
+        return output
+
+# --- 3. Model Instantiation and Summary ---
+HIDDEN_SIZE = 64
+OUTPUT_SIZE = 1
+NUM_LAYERS = 2 # Stacked LSTM
+
+model = StackedLSTMModel(
+    input_size=N_FEATURES, 
+    hidden_size=HIDDEN_SIZE, 
+    output_size=OUTPUT_SIZE,
+    num_layers=NUM_LAYERS
+)
+
+# Print a conceptual summary
+print(f"X batch shape: {X_example.shape}")
+print(f"Number of Features: {N_FEATURES}")
+print(f"Number of LSTM layers: {NUM_LAYERS}")
+print("\n--- Stacked PyTorch LSTM Model Summary ---")
+print(model)
+
+# Conceptual training setup:
+# optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+# loss_fn = nn.MSELoss()
+# model.train()
+# for X_batch, y_batch in train_loader:
+#     # Training loop steps...
+#     pass
+
+
+⏭ Next Steps for Week 4
+
+Next week, we move away from purely recurrent architectures and introduce Convolutional Neural Networks (CNNs) to act as local pattern extractors in the time dimension using a Hybrid CNN-LSTM approach.
